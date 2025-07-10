@@ -1,0 +1,7 @@
+# config/samples/operation-sample.yaml
+apiVersion: yourgroup.yourdomain.com/v1
+kind: Operation
+metadata:
+  name: test-operation
+spec:
+  operationType: Upgrade

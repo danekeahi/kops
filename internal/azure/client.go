@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"aks-health-monitor/pkg/config"
+	"kops/pkg/config"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/containerservice/armcontainerservice/v4"
@@ -30,14 +30,19 @@ type Client struct {
 // NewClient creates a new Azure client
 func NewClient(azureConfig config.AzureConfig) (*Client, error) {
 	// Create credential
-	cred, err := azidentity.NewClientSecretCredential( // WILL NEED TO CHANGE THIS TO NewManagedIdentityCredential() IF USING MANAGED IDENTITY
-		azureConfig.TenantID,
-		azureConfig.ClientID,
-		azureConfig.ClientSecret,
-		nil,
-	)
+	// cred, err := azidentity.NewClientSecretCredential( // WILL NEED TO CHANGE THIS TO NewManagedIdentityCredential() IF USING MANAGED IDENTITY
+	// 	azureConfig.TenantID,
+	// 	azureConfig.ClientID,
+	// 	azureConfig.ClientSecret,
+	// 	nil,
+	// )
+	// if err != nil {
+	// 	return nil, fmt.Errorf("failed to create credential: %w", err)
+	// }
+	// Using Azure CLI credentials first (will need to change to managed identity later)
+	cred, err := azidentity.NewAzureCLICredential(nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create credential: %w", err)
+		return nil, fmt.Errorf("failed to create Azure CLI credential: %w", err)
 	}
 
 	// Create AKS client

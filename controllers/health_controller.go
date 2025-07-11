@@ -25,6 +25,8 @@ import (
 	"path/filepath"
 
 	"k8s.io/client-go/tools/clientcmd"
+	"kops/internal/azure"
+	"kops/pkg/config"
 )
 
 var (
@@ -40,8 +42,8 @@ func main() {
 	// Load in-cluster config (use clientcmd for local dev)
 	// CHANGED
 	// config, err := rest.InClusterConfig()
-	kubeconfig := filepath.Join(os.Getenv("HOME"), ".kube", "config")
-	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+	kubeConfigPath := filepath.Join(os.Getenv("HOME"), ".kube", "config")
+	kubeConfig, err := clientcmd.BuildConfigFromFlags("", kubeConfigPath)
 	if err != nil {
 		panic(err)
 	}
@@ -52,10 +54,26 @@ func main() {
 	// Create a clientset for your custom resource
 	// CHANGED
 	// crClient, err := clientset.NewForConfig(config)
-	dynClient, err := dynamic.NewForConfig(config)
+	dynClient, err := dynamic.NewForConfig(kubeConfig)
 	if err != nil {
 		panic(err)
 	}
+
+    // Load Azure config from hardcoded values (CHANGE LATER)
+    azureCfg := config.AzureConfig{
+        SubscriptionID:    "8ecadfc9-d1a3-4ea4-b844-0d9f87e4d7c8",
+        ResourceGroupName: "aks-health-rg",
+        ClusterName:       "aks-health-cluster",
+    }
+
+    azureClient, err := azure.NewClient(azureCfg)
+    if err != nil {
+        fmt.Printf("Failed to create Azure client: %v\n", err)
+        return
+    }
+
+    // Load initial metrics from ConfigMap
+	loadMetrics(dynClient)
 
 	// Create an informer factory for your CRD
 	// CHANGED
@@ -94,7 +112,7 @@ func main() {
 			go func() {
 				// defer wg.Done()
 				// monitorOperation(op, stopChan)
-				monitorOperation(name, stopChan) // CHANGED
+				monitorOperation(name, stopChan, azureClient) // CHANGED
 			}()
 		},
 
@@ -143,7 +161,7 @@ func main() {
 			}
 
 			// Check if this is the specific ConfigMap we're interested in
-			if cm.Name == "metrics-config" {
+			if cm.Name == "metrics-config" { // change to metrics-store later to match tanamutu's
 				loadMetrics(dynClient) // Reload metrics into the cache when config changes
 
                 // Signal that metrics were updated
@@ -163,10 +181,7 @@ func main() {
 	factory.Start(stop)
 	factory.WaitForCacheSync(stop)
 
-	// Load initial metrics from ConfigMap
-	loadMetrics(dynClient)
-
-	fmt.Println("Informer started. Waiting for events...")
+	// fmt.Println("Informer started. Waiting for events...")
 
 	// Wait for the monitoring goroutine to finish before exiting
 	// wg.Wait()
@@ -178,11 +193,11 @@ func main() {
 
 // This function runs in a goroutine and checks metrics periodically
 // func monitorOperation(op *myv1.Operation, stopChan <-chan struct{}) {
-func monitorOperation(opName string, stopChan <-chan struct{}) { // CHANGED
+func monitorOperation(opName string, stopChan <-chan struct{}, azureClient *azure.Client) { // CHANGED
 	fmt.Printf("Started monitoring operation: %s\n", opName)
 
     // Initial check
-    if checkAndAbortIfUnhealthy(opName) {
+    if checkAndAbortIfUnhealthy(opName, azureClient) {
         return
     }
 
@@ -193,7 +208,7 @@ func monitorOperation(opName string, stopChan <-chan struct{}) { // CHANGED
 			return
         case <-metricsUpdated:
             // This case will be triggered when metrics are updated
-			if checkAndAbortIfUnhealthy(opName) {
+			if checkAndAbortIfUnhealthy(opName, azureClient) {
                 return
             }
 		}
@@ -230,7 +245,7 @@ func loadMetrics(dynClient dynamic.Interface) {
 	fmt.Println("Metrics cache loaded.")
 }
 
-func checkAndAbortIfUnhealthy(opName string) bool {
+func checkAndAbortIfUnhealthy(opName string, azureClient *azure.Client) bool {
 	// Check the health of the operation and abort if unhealthy
     // Lock before reading shared metricsCache
 	mu.Lock()
@@ -240,7 +255,14 @@ func checkAndAbortIfUnhealthy(opName string) bool {
     // Simulate metric evaluation
 	if metrics["cpu"] == "high" {
 		fmt.Printf("Unhealthy metrics detected for operation %s! Aborting.\n", opName)
-		// TODO: Call Azure client to abort
+		// Call Azure client to abort
+        ctx := context.Background()
+        err := azureClient.AbortClusterOperation(ctx, "cpu-unhealthy")
+        if err != nil {
+            fmt.Printf("Failed to abort operation: %v\n", err)
+        } else {
+            fmt.Println("Abort request sent successfully.")
+        }
         return true
 	}
 

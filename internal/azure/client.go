@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"kops/pkg/config"
+	"kops/pkg/kopsconfig"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/containerservice/armcontainerservice/v4"
@@ -28,7 +28,7 @@ type Client struct {
 }
 
 // NewClient creates a new Azure client
-func NewClient(azureConfig config.AzureConfig) (*Client, error) {
+func NewClient(azureConfig kopsconfig.AzureConfig) (*Client, error) {
 	// Create credential
 	// cred, err := azidentity.NewClientSecretCredential( // WILL NEED TO CHANGE THIS TO NewManagedIdentityCredential() IF USING MANAGED IDENTITY
 	// 	azureConfig.TenantID,

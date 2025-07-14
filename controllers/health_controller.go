@@ -1,27 +1,23 @@
-package main
+package controllers
 
 import (
 	"context"
 	"fmt"
 	"time"
 
-	"k8s.io/client-go/tools/cache"
-
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/client-go/kubernetes"
-	informers "k8s.io/client-go/informers"
-	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/dynamic/dynamicinformer"
-
-	"os"
-	"path/filepath"
-
+	"k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
+	dynamicinformer "k8s.io/client-go/dynamic/dynamicinformer"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"kops/internal/azure"
-	"kops/pkg/config"
+	"kops/pkg/kopsconfig"
 )
 
 var (
@@ -30,40 +26,32 @@ var (
     metricsUpdated chan struct{}   // Used to signal when metrics are updated
 )
 
-func main() {
+func StartHealthMonitoring(kubeConfigPath string, azureCfg kopsconfig.AzureConfig) error {
 	// Load in-cluster config (use clientcmd for local dev)
-	kubeConfigPath := filepath.Join(os.Getenv("HOME"), ".kube", "config")
 	kubeConfig, err := clientcmd.BuildConfigFromFlags("", kubeConfigPath)
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("error loading kubeconfig: %w", err)
 	}
-
-    // Initialize channel for metrics updates
-    metricsUpdated = make(chan struct{}, 1) // Buffered so it won't block
 
 	// Create a dynamic client for operations
 	dynClient, err := dynamic.NewForConfig(kubeConfig)
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("error creating dynamic client: %w", err)
 	}
 	// Create a typed client for config maps
 	typedClient, err := kubernetes.NewForConfig(kubeConfig)
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("error creating typed client: %w", err)
 	}
-
-    // Load Azure config from hardcoded values (CHANGE LATER)
-    azureCfg := config.AzureConfig{
-        SubscriptionID:    "8ecadfc9-d1a3-4ea4-b844-0d9f87e4d7c8",
-        ResourceGroupName: "aks-health-rg",
-        ClusterName:       "aks-health-cluster",
-    }
 
     azureClient, err := azure.NewClient(azureCfg)
     if err != nil {
-        fmt.Printf("Failed to create Azure client: %v\n", err)
-        return
+		return fmt.Errorf("Failed to create Azure client: %v\n", err)
     }
+	
+	// Initialize channel for metrics updates
+	metricsUpdated = make(chan struct{}, 1) // Buffered so it won't block
+	stopChan = make(chan struct{})
 
 	// Create an informer factory for your CRD
 	dynFactory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(dynClient, time.Minute*10, "default", nil)
@@ -77,9 +65,9 @@ func main() {
 		Version:  "v1",
 		Resource: "operations",
 	}
-	informer := dynFactory.ForResource(gvr).Informer()
+	opInformer := dynFactory.ForResource(gvr).Informer()
 	// Register event handlers
-	informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	opInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			u := obj.(*unstructured.Unstructured)
 			name := u.GetName()
@@ -92,17 +80,12 @@ func main() {
 			}
 
 			// Start monitoring in a goroutine
-			stopChan = make(chan struct{})
 			monitoringRunning = true
-			go func() {
-				monitorOperation(name, stopChan, azureClient, typedClient)
-			}()
+			go monitorOperation(name, stopChan, azureClient, typedClient)
 		},
 
 		DeleteFunc: func(obj interface{}) {
-			u := obj.(*unstructured.Unstructured)
-			name := u.GetName()
-			fmt.Printf("Operation CR deleted: %s\n", name)
+			fmt.Printf("Operation CR deleted.\n")
 
 			// Signal the monitoring goroutine to stop
 			if monitoringRunning && stopChan != nil {
@@ -123,7 +106,7 @@ func main() {
 			cm := newObj.(*corev1.ConfigMap)
 
 			// Check if this is the specific ConfigMap we're interested in
-			if cm.Name == "metrics-config" { // change to metrics-store later to match tanamutu's
+			if cm.Name == "metrics-store" { // change to metrics-store later to match tanamutu's
                 // Signal that metrics were updated
                 select {
                 case metricsUpdated <- struct{}{}:
@@ -134,17 +117,16 @@ func main() {
 		},
 	})
 
-	// Start the informer
+	// Start the informers
 	stop := make(chan struct{})
-	defer close(stop)
+	go dynFactory.Start(stop)
+	go typedFactory.Start(stop)
 
-	dynFactory.Start(stop)
-	typedFactory.Start(stop)
+	if !cache.WaitForCacheSync(stop, opInformer.HasSynced, cmInformer.HasSynced) {
+		return fmt.Errorf("failed to sync caches")
+	}
 
-	dynFactory.WaitForCacheSync(stop)
-	typedFactory.WaitForCacheSync(stop)
-
-	select {}
+	return nil
 }
 
 // This function runs in a goroutine and checks metrics periodically
@@ -172,9 +154,9 @@ func monitorOperation(opName string, stopChan <-chan struct{}, azureClient *azur
 
 func checkAndAbortIfUnhealthy(opName string, azureClient *azure.Client, typedClient kubernetes.Interface) bool {
 	// Check the health of the operation and abort if unhealthy
-	cm, err := typedClient.CoreV1().ConfigMaps("default").Get(context.TODO(), "metrics-config", v1.GetOptions{})
+	cm, err := typedClient.CoreV1().ConfigMaps("default").Get(context.TODO(), "metrics-store", metav1.GetOptions{})
 	if err != nil {
-		fmt.Printf("Failed to fetch metrics-config: %v\n", err)
+		fmt.Printf("Failed to fetch metrics-store: %v\n", err)
 		return false
 	}
 

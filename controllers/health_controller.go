@@ -1,26 +1,21 @@
 package main
 
 import (
-	// "context"
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
-	// metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	// "k8s.io/apimachinery/pkg/runtime"
-	// "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/kubernetes"
+	informers "k8s.io/client-go/informers"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/dynamic/dynamicinformer"
 
-	// for using local kubeconfig
 	"os"
 	"path/filepath"
 
@@ -32,16 +27,11 @@ import (
 var (
 	stopChan          chan struct{} // Used to signal the monitoring goroutine to stop
 	monitoringRunning bool          // Prevents multiple goroutines from being started
-	// wg                sync.WaitGroup    // Ensures we wait for the monitoring goroutine to finish
-	metricsCache map[string]string // Stores latest metrics from ConfigMap
-	mu           sync.Mutex        // Protects access to metricsCache
     metricsUpdated chan struct{}   // Used to signal when metrics are updated
 )
 
 func main() {
 	// Load in-cluster config (use clientcmd for local dev)
-	// CHANGED
-	// config, err := rest.InClusterConfig()
 	kubeConfigPath := filepath.Join(os.Getenv("HOME"), ".kube", "config")
 	kubeConfig, err := clientcmd.BuildConfigFromFlags("", kubeConfigPath)
 	if err != nil {
@@ -49,12 +39,15 @@ func main() {
 	}
 
     // Initialize channel for metrics updates
-    metricsUpdated = make(chan struct{}, 1) // Buffered so it won’t block
+    metricsUpdated = make(chan struct{}, 1) // Buffered so it won't block
 
-	// Create a clientset for your custom resource
-	// CHANGED
-	// crClient, err := clientset.NewForConfig(config)
+	// Create a dynamic client for operations
 	dynClient, err := dynamic.NewForConfig(kubeConfig)
+	if err != nil {
+		panic(err)
+	}
+	// Create a typed client for config maps
+	typedClient, err := kubernetes.NewForConfig(kubeConfig)
 	if err != nil {
 		panic(err)
 	}
@@ -72,29 +65,22 @@ func main() {
         return
     }
 
-    // Load initial metrics from ConfigMap
-	loadMetrics(dynClient)
-
 	// Create an informer factory for your CRD
-	// CHANGED
-	// factory := informers.NewSharedInformerFactory(crClient, time.Minute*10)
-	factory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(dynClient, time.Minute*10, "default", nil)
+	dynFactory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(dynClient, time.Minute*10, "default", nil)
+	
+	// Create a typed informer factory for config maps
+	typedFactory := informers.NewSharedInformerFactoryWithOptions(typedClient, time.Minute*10, informers.WithNamespace("default"))
 
 	// Get the informer for your Operation CR
-	// CHANGED
-	// informer := factory.Yourgroup().V1().Operations().Informer()
 	gvr := schema.GroupVersionResource{
 		Group:    "yourgroup.yourdomain.com",
 		Version:  "v1",
 		Resource: "operations",
 	}
-	informer := factory.ForResource(gvr).Informer()
+	informer := dynFactory.ForResource(gvr).Informer()
 	// Register event handlers
 	informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
-			// CHANGED
-			// op := obj.(*myv1.Operation)
-			// fmt.Printf("Operation CR created: %s\n", op.Name)
 			u := obj.(*unstructured.Unstructured)
 			name := u.GetName()
 			fmt.Printf("Operation CR created: %s\n", name)
@@ -108,18 +94,12 @@ func main() {
 			// Start monitoring in a goroutine
 			stopChan = make(chan struct{})
 			monitoringRunning = true
-			// wg.Add(1)
 			go func() {
-				// defer wg.Done()
-				// monitorOperation(op, stopChan)
-				monitorOperation(name, stopChan, azureClient) // CHANGED
+				monitorOperation(name, stopChan, azureClient, typedClient)
 			}()
 		},
 
 		DeleteFunc: func(obj interface{}) {
-			// CHANGED
-			// op := obj.(*myv1.Operation)
-			// fmt.Printf("Operation CR deleted: %s\n", op.Name)
 			u := obj.(*unstructured.Unstructured)
 			name := u.GetName()
 			fmt.Printf("Operation CR deleted: %s\n", name)
@@ -134,36 +114,16 @@ func main() {
 	})
 
 	// Watch ConfigMap updates
-	// cmInformer := factory.Core().V1().ConfigMaps().Informer()
-	// CHANGED
-	// Define the GroupVersionResource for ConfigMaps (core API group)
-	cmGVR := schema.GroupVersionResource{
-		Group:    "",           // Empty string for core API group
-		Version:  "v1",         // Kubernetes API version
-		Resource: "configmaps", // Plural resource name
-	}
 	// Create an informer for ConfigMaps using the dynamic client
-	cmInformer := factory.ForResource(cmGVR).Informer()
+	cmInformer := typedFactory.Core().V1().ConfigMaps().Informer()
 
 	// Add event handler to react to ConfigMap changes
 	cmInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		UpdateFunc: func(oldObj, newObj interface{}) {
-			// cm := newObj.(*corev1.ConfigMap)
-			// CHANGED
-			// Convert the unstructured object to a typed ConfigMap
-			unstructuredCM := newObj.(*unstructured.Unstructured)
-			var cm corev1.ConfigMap
-			// Use the runtime converter to transform unstructured data to ConfigMap
-			err := runtime.DefaultUnstructuredConverter.FromUnstructured(unstructuredCM.Object, &cm)
-			if err != nil {
-				fmt.Printf("Failed to convert unstructured to ConfigMap: %v\n", err)
-				return
-			}
+			cm := newObj.(*corev1.ConfigMap)
 
 			// Check if this is the specific ConfigMap we're interested in
 			if cm.Name == "metrics-config" { // change to metrics-store later to match tanamutu's
-				loadMetrics(dynClient) // Reload metrics into the cache when config changes
-
                 // Signal that metrics were updated
                 select {
                 case metricsUpdated <- struct{}{}:
@@ -178,26 +138,21 @@ func main() {
 	stop := make(chan struct{})
 	defer close(stop)
 
-	factory.Start(stop)
-	factory.WaitForCacheSync(stop)
+	dynFactory.Start(stop)
+	typedFactory.Start(stop)
 
-	// fmt.Println("Informer started. Waiting for events...")
-
-	// Wait for the monitoring goroutine to finish before exiting
-	// wg.Wait()
-	// fmt.Println("All monitoring finished. Exiting.")
-	// CHANGED
+	dynFactory.WaitForCacheSync(stop)
+	typedFactory.WaitForCacheSync(stop)
 
 	select {}
 }
 
 // This function runs in a goroutine and checks metrics periodically
-// func monitorOperation(op *myv1.Operation, stopChan <-chan struct{}) {
-func monitorOperation(opName string, stopChan <-chan struct{}, azureClient *azure.Client) { // CHANGED
+func monitorOperation(opName string, stopChan <-chan struct{}, azureClient *azure.Client, typedClient kubernetes.Interface) {
 	fmt.Printf("Started monitoring operation: %s\n", opName)
 
     // Initial check
-    if checkAndAbortIfUnhealthy(opName, azureClient) {
+    if checkAndAbortIfUnhealthy(opName, azureClient, typedClient) {
         return
     }
 
@@ -208,52 +163,23 @@ func monitorOperation(opName string, stopChan <-chan struct{}, azureClient *azur
 			return
         case <-metricsUpdated:
             // This case will be triggered when metrics are updated
-			if checkAndAbortIfUnhealthy(opName, azureClient) {
+			if checkAndAbortIfUnhealthy(opName, azureClient, typedClient) {
                 return
             }
 		}
 	}
 }
 
-func loadMetrics(dynClient dynamic.Interface) {
-	// This function can be used to load initial metrics from ConfigMap
-	cmRes := schema.GroupVersionResource{
-		Group:    "",           // "" because ConfigMaps are core (not part of a named API group)
-		Version:  "v1",         // API version
-		Resource: "configmaps", // Plural name of the resource
-	}
-
-	// Use dynamic client to fetch the ConfigMap from the default namespace
-	unstructuredCM, err := dynClient.Resource(cmRes).Namespace("default").Get(context.TODO(), "metrics-config", v1.GetOptions{})
-	if err != nil {
-		fmt.Printf("Warning: could not fetch initial metrics-config: %v\n", err)
-		return
-	}
-
-	var cm corev1.ConfigMap
-	// Convert from unstructured.Unstructured to typed *corev1.ConfigMap
-	err = runtime.DefaultUnstructuredConverter.FromUnstructured(unstructuredCM.UnstructuredContent(), &cm)
-	if err != nil {
-		fmt.Printf("Failed to convert initial unstructured to ConfigMap: %v\n", err)
-		return
-	}
-
-	// Store the initial ConfigMap data in the metrics cache
-	mu.Lock()
-	metricsCache = cm.Data
-	mu.Unlock()
-	fmt.Println("Metrics cache loaded.")
-}
-
-func checkAndAbortIfUnhealthy(opName string, azureClient *azure.Client) bool {
+func checkAndAbortIfUnhealthy(opName string, azureClient *azure.Client, typedClient kubernetes.Interface) bool {
 	// Check the health of the operation and abort if unhealthy
-    // Lock before reading shared metricsCache
-	mu.Lock()
-	metrics := metricsCache
-	mu.Unlock()
+	cm, err := typedClient.CoreV1().ConfigMaps("default").Get(context.TODO(), "metrics-config", v1.GetOptions{})
+	if err != nil {
+		fmt.Printf("Failed to fetch metrics-config: %v\n", err)
+		return false
+	}
 
     // Simulate metric evaluation
-	if metrics["cpu"] == "high" {
+	if cm.Data["cpu"] == "high" {
 		fmt.Printf("Unhealthy metrics detected for operation %s! Aborting.\n", opName)
 		// Call Azure client to abort
         ctx := context.Background()

@@ -9,10 +9,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
+
+	"kops/metric_collector"
 )
 
 func main() {
-	//Creating the client
+	//Creating the client from kubeconfig file
 	rules := clientcmd.NewDefaultClientConfigLoadingRules()
 	kubeconfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, &clientcmd.ConfigOverrides{})
 	config, err := kubeconfig.ClientConfig()
@@ -88,7 +90,7 @@ func main() {
 
 	// Collect metrics immediately on startup
 	fmt.Println("\n=== Initial metrics collection ===")
-	err = CollectAndStoreMetrics(kubeClient)
+	err = metric_collector.CollectAndStoreMetrics(kubeClient)
 	if err != nil {
 		fmt.Printf("Error collecting initial metrics: %v\n", err)
 	} else {
@@ -104,7 +106,7 @@ func main() {
 		fmt.Printf("\n=== Metrics collection #%d ===\n", collectionCount)
 		fmt.Printf("Time: %s\n", time.Now().Format("2006-01-02 15:04:05"))
 
-		err = CollectAndStoreMetrics(kubeClient)
+		err = metric_collector.CollectAndStoreMetrics(kubeClient)
 		if err != nil {
 			fmt.Printf("Error collecting metrics: %v\n", err)
 			// Continue running even if one collection fails

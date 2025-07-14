@@ -1,4 +1,4 @@
-package main
+package metric_collector
 
 import (
 	"context"

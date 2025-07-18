@@ -3,26 +3,31 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
 
+	"kops/client"
 	"kops/metric_collector"
 )
 
 func main() {
 	//Creating the client from kubeconfig file
-	rules := clientcmd.NewDefaultClientConfigLoadingRules()
-	kubeconfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, &clientcmd.ConfigOverrides{})
-	config, err := kubeconfig.ClientConfig()
-	if err != nil {
-		fmt.Printf("Error loading kubeconfig: %v\n", err)
-		return
-	}
-	kubeClient, err := kubernetes.NewForConfig(config)
+	//rules := clientcmd.NewDefaultClientConfigLoadingRules()
+	//kubeconfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, &clientcmd.ConfigOverrides{})
+	//config, err := kubeconfig.ClientConfig()
+	//if err != nil {
+	//	fmt.Printf("Error loading kubeconfig: %v\n", err)
+	//	return
+	//
+
+	subscriptionID := os.Getenv("AZURE_SUBSCRIPTION_ID")
+	resourceGroup := os.Getenv("AKS_RESOURCE_GROUP")
+	clusterName := os.Getenv("AKS_CLUSTER_NAME")
+
+	kubeClient, err := client.GetKubeClientForAKSCluster(context.Background(), subscriptionID, resourceGroup, clusterName)
 	if err != nil {
 		fmt.Printf("Error creating clientset: %v\n", err)
 		return

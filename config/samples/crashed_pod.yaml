@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crashme-deployment
+  namespace: default
+spec:
+  replicas: 15
+  selector:
+    matchLabels:
+      app: crashme
+  template:
+    metadata:
+      labels:
+        app: crashme
+    spec:
+      containers:
+        - name: crash-container
+          image: busybox
+          command: ["/bin/sh", "-c", "exit 1"]
+      restartPolicy: Always

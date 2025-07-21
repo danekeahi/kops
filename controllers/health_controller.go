@@ -11,13 +11,13 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/tools/clientcmd"
 	dynamicinformer "k8s.io/client-go/dynamic/dynamicinformer"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"kops/internal/azure"
-	"kops/pkg/kopsconfig"
+
+	"encoding/json"
 )
 
 var (
@@ -26,29 +26,7 @@ var (
     metricsUpdated chan struct{}   // Used to signal when metrics are updated
 )
 
-func StartHealthMonitoring(kubeConfigPath string, azureCfg kopsconfig.AzureConfig) error {
-	// Load in-cluster config (use clientcmd for local dev)
-	kubeConfig, err := clientcmd.BuildConfigFromFlags("", kubeConfigPath)
-	if err != nil {
-		return fmt.Errorf("error loading kubeconfig: %w", err)
-	}
-
-	// Create a dynamic client for operations
-	dynClient, err := dynamic.NewForConfig(kubeConfig)
-	if err != nil {
-		return fmt.Errorf("error creating dynamic client: %w", err)
-	}
-	// Create a typed client for config maps
-	typedClient, err := kubernetes.NewForConfig(kubeConfig)
-	if err != nil {
-		return fmt.Errorf("error creating typed client: %w", err)
-	}
-
-    azureClient, err := azure.NewClient(azureCfg)
-    if err != nil {
-		return fmt.Errorf("Failed to create Azure client: %v\n", err)
-    }
-	
+func StartHealthMonitoring(azureClient *azure.Client, typedClient kubernetes.Interface, dynClient dynamic.Interface) error {
 	// Initialize channel for metrics updates
 	metricsUpdated = make(chan struct{}, 1) // Buffered so it won't block
 	stopChan = make(chan struct{})
@@ -160,8 +138,30 @@ func checkAndAbortIfUnhealthy(opName string, azureClient *azure.Client, typedCli
 		return false
 	}
 
+	raw := cm.Data["current_metrics.json"]
+	if raw == "" {
+		fmt.Println("current_metrics.json not found in ConfigMap.")
+		return false
+	}
+
+	var parsed map[string]interface{}
+	err = json.Unmarshal([]byte(raw), &parsed)
+	if err != nil {
+		fmt.Printf("Failed to parse current_metrics.json: %v\n", err)
+		return false
+	}
+
+	podMetrics := parsed["pod_metrics"].(map[string]interface{})
+	if podMetrics == nil {
+		fmt.Println("No pod metrics found in current_metrics.json.")
+		return false
+	}
+
+	fmt.Printf("----------------------CRASHING PERCENT: %v\n", podMetrics["crashing_percent"])
+	fmt.Printf("----------------------CRASHING PODS: %v\n", podMetrics["crashing_pods"])
+
     // Simulate metric evaluation
-	if cm.Data["cpu"] == "high" {
+	if podMetrics["crashing_percent"].(float64) >= 33.3 {
 		fmt.Printf("Unhealthy metrics detected for operation %s! Aborting.\n", opName)
 		// Call Azure client to abort
         ctx := context.Background()

@@ -5,11 +5,14 @@ import (
 	"context"
 	"fmt"
 	"strings"
-
-	"kops/pkg/kopsconfig"
+	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/containerservice/armcontainerservice/v4"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/rest"
 )
 
 // OperationStatus represents the status of an AKS operation
@@ -27,37 +30,59 @@ type Client struct {
 	clusterName       string
 }
 
-// NewClient creates a new Azure client
-func NewClient(azureConfig kopsconfig.AzureConfig) (*Client, error) {
-	// Create credential
-	// cred, err := azidentity.NewClientSecretCredential( // WILL NEED TO CHANGE THIS TO NewManagedIdentityCredential() IF USING MANAGED IDENTITY
-	// 	azureConfig.TenantID,
-	// 	azureConfig.ClientID,
-	// 	azureConfig.ClientSecret,
-	// 	nil,
-	// )
-	// if err != nil {
-	// 	return nil, fmt.Errorf("failed to create credential: %w", err)
-	// }
-	// Using Azure CLI credentials first (will need to change to managed identity later)
-	cred, err := azidentity.NewAzureCLICredential(nil)
+func GetDefaultAzureCredential() (*azidentity.DefaultAzureCredential, error) {
+	cred, err := azidentity.NewDefaultAzureCredential(nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create Azure CLI credential: %w", err)
+		return nil, fmt.Errorf("failed to create default Azure credential: %w", err)
 	}
+	return cred, nil
+}
 
-	// Create AKS client
-	aksClient, err := armcontainerservice.NewManagedClustersClient(azureConfig.SubscriptionID, cred, nil)
+func GetAKSClient(subscriptionID string, resourceGroupName string, clusterName string, cred *azidentity.DefaultAzureCredential) (*Client, error) {
+	aksClient, err := armcontainerservice.NewManagedClustersClient(subscriptionID, cred, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create AKS client: %w", err)
 	}
-
+	
+	// Return a Client struct with the AKS client
+	// Note: resourceGroupName and clusterName will need to be set later
+	// or this function should be modified to accept them as parameters
 	return &Client{
 		aksClient:         aksClient,
-		subscriptionID:    azureConfig.SubscriptionID,
-		resourceGroupName: azureConfig.ResourceGroupName,
-		clusterName:       azureConfig.ClusterName,
+		subscriptionID:    subscriptionID,
+		resourceGroupName: resourceGroupName,
+		clusterName:       clusterName,
 	}, nil
 }
+
+func GetKubeRestConfig(ctx context.Context, aksClient *Client, resourceGroup, clusterName string) (*rest.Config, error) {
+	client := aksClient.aksClient
+	resp, err := client.ListClusterAdminCredentials(ctx, resourceGroup, clusterName, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get cluster admin credentials: %w", err)
+	}
+	if len(resp.Kubeconfigs) == 0 {
+		return nil, fmt.Errorf("no kubeconfigs returned for cluster %s", clusterName)
+	}
+
+	kubeconfig := resp.Kubeconfigs[0].Value
+	restCfg, err := clientcmd.RESTConfigFromKubeConfig(kubeconfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse kubeconfig: %w", err)
+	}
+	restCfg.Timeout = 30 * time.Second
+
+	return restCfg, nil
+}
+
+func GetTypedClient(restCfg *rest.Config) (*kubernetes.Clientset, error) {
+	return kubernetes.NewForConfig(restCfg)
+}
+
+func GetDynamicClient(restCfg *rest.Config) (dynamic.Interface, error) {
+	return dynamic.NewForConfig(restCfg)
+}
+
 
 // GetClusterOperationStatus checks if there's an ongoing operation on the cluster
 func (c *Client) GetClusterOperationStatus(ctx context.Context) (*OperationStatus, error) {

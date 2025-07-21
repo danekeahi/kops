@@ -14,7 +14,7 @@ import (
 // GetKubeClientForAKSCluster fetches the admin kubeconfig and returns a Kubernetes clientset
 func GetKubeClientForAKSCluster(ctx context.Context, subscriptionID, resourceGroup, clusterName string) (*kubernetes.Clientset, error) {
 	// Authenticate using Azure identity chain
-	cred, err := azidentity.NewDefaultAzureCredential(nil)
+	cred, err := azidentity.NewManagedIdentityCredential(nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to obtain Azure credential: %w", err)
 	}

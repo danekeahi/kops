@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
+	"net/http"
 	"os"
 	"time"
 
@@ -14,14 +16,21 @@ import (
 )
 
 func main() {
-	//Creating the client from kubeconfig file
-	//rules := clientcmd.NewDefaultClientConfigLoadingRules()
-	//kubeconfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, &clientcmd.ConfigOverrides{})
-	//config, err := kubeconfig.ClientConfig()
-	//if err != nil {
-	//	fmt.Printf("Error loading kubeconfig: %v\n", err)
-	//	return
-	//
+
+	// Start health endpoint in a goroutine (non-blocking)
+	go func() {
+		http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintln(w, "OK")
+		})
+
+		port := "8080"
+		log.Printf("Health endpoint running on :%s\n", port)
+		err := http.ListenAndServe(":"+port, nil)
+		if err != nil {
+			log.Fatalf("Failed to start server: %v", err)
+		}
+	}()
 
 	subscriptionID := os.Getenv("AZURE_SUBSCRIPTION_ID")
 	resourceGroup := os.Getenv("AKS_RESOURCE_GROUP")

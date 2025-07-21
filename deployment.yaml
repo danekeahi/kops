@@ -1,0 +1,155 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kops-metrics-collector
+  namespace: default
+  #annotations:
+  #  azure.workload.identity/client-id: "78aa4567-141c-456b-a473-b7194914149b"  # Replace with your Azure AD application client ID
+---  
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kops-metrics-collector
+rules:
+- apiGroups: [""]
+  resources: ["pods", "nodes", "configmaps"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["pods", "nodes"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kops-metrics-collector
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kops-metrics-collector
+subjects:
+- kind: ServiceAccount
+  name: kops-metrics-collector
+  namespace: default
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kops-azure-credentials
+  namespace: default
+type: Opaque
+stringData:
+  AZURE_SUBSCRIPTION_ID: "feb5b150-60fe-4441-be73-8c02a524f55a" # Replace with your Azure subscription ID
+  AKS_RESOURCE_GROUP: "tanamutu-rg" # Replace with your AKS resource group
+  AKS_CLUSTER_NAME: "target" # Replace with your AKS cluster name
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kops-metrics-collector
+  namespace: default
+  labels:
+    app: kops-metrics-collector
+    version: "1.0.0"
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: kops-metrics-collector
+  template:
+    metadata:
+      labels:
+        app: kops-metrics-collector
+        version: "1.0.0"
+      annotations:
+        prometheus.io/scrape: "false"  # Set to true if you add Prometheus metrics later
+    spec:
+      serviceAccountName: kops-metrics-collector
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+      - name: kops-metrics-collector
+        image: tanamutu/kops:latest  # Replace with your actual image
+        imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+            - ALL
+        env:
+        - name: LOG_LEVEL
+          value: "info"
+        envFrom:
+        - secretRef:
+            name: kops-azure-credentials
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30
+      # For using Azure Workload Identity
+      # nodeSelector:
+      #   kubernetes.io/os: linux
+---
+# Optional: ConfigMap for application configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kops-config
+  namespace: default
+data:
+  config.yaml: |
+    log_level: info
+    collection_interval: "1m"
+    metrics_store_name: "metrics-store"
+---
+# Optional: Service for future HTTP endpoints
+apiVersion: v1
+kind: Service
+metadata:
+  name: kops-metrics-collector
+  namespace: default
+  labels:
+    app: kops-metrics-collector
+spec:
+  selector:
+    app: kops-metrics-collector
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  type: ClusterIP

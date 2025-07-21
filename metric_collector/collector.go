@@ -238,7 +238,23 @@ func updateMetricsConfigMap(client kubernetes.Interface, newMetrics *MetricsData
 		metav1.GetOptions{},
 	)
 	if err != nil {
-		return fmt.Errorf("failed to get ConfigMap: %v", err)
+		// If the ConfigMap does not exist, create it
+		configMap = &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      configMapName,
+				Namespace: namespace,
+			},
+			Data: map[string]string{},
+		}
+
+		_, err := client.CoreV1().ConfigMaps(namespace).Create(
+			context.Background(),
+			configMap,
+			metav1.CreateOptions{},
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create ConfigMap: %v", err)
+		}
 	}
 
 	// Initialize data map if it doesn't exist

@@ -123,33 +123,3 @@ spec:
       # For using Azure Workload Identity
       # nodeSelector:
       #   kubernetes.io/os: linux
----
-# Optional: ConfigMap for application configuration
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: kops-config
-  namespace: default
-data:
-  config.yaml: |
-    log_level: info
-    collection_interval: "1m"
-    metrics_store_name: "metrics-store"
----
-# Optional: Service for future HTTP endpoints
-apiVersion: v1
-kind: Service
-metadata:
-  name: kops-metrics-collector
-  namespace: default
-  labels:
-    app: kops-metrics-collector
-spec:
-  selector:
-    app: kops-metrics-collector
-  ports:
-  - name: http
-    port: 8080
-    targetPort: 8080
-    protocol: TCP
-  type: ClusterIP

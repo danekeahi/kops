@@ -59,7 +59,6 @@ LABEL org.opencontainers.image.source="https://github.com/danekeahi/kops"
 ENV AZURE_SUBSCRIPTION_ID=""
 ENV AKS_RESOURCE_GROUP=""
 ENV AKS_CLUSTER_NAME=""
-ENV LOG_LEVEL="info"
 
 # Expose port if you add HTTP endpoints later
 # EXPOSE 8080

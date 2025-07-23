@@ -30,15 +30,15 @@ type Client struct {
 	clusterName       string
 }
 
-func GetDefaultAzureCredential() (*azidentity.DefaultAzureCredential, error) {
-	cred, err := azidentity.NewDefaultAzureCredential(nil)
+func GetDefaultAzureCredential() (*azidentity.ManagedIdentityCredential, error) {
+	cred, err := azidentity.NewManagedIdentityCredential(nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create default Azure credential: %w", err)
 	}
 	return cred, nil
 }
 
-func GetAKSClient(subscriptionID string, resourceGroupName string, clusterName string, cred *azidentity.DefaultAzureCredential) (*Client, error) {
+func GetAKSClient(subscriptionID string, resourceGroupName string, clusterName string, cred *azidentity.ManagedIdentityCredential) (*Client, error) {
 	aksClient, err := armcontainerservice.NewManagedClustersClient(subscriptionID, cred, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create AKS client: %w", err)

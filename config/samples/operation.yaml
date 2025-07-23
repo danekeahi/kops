@@ -1,7 +1,5 @@
-# config/samples/operation-sample.yaml
-apiVersion: yourgroup.yourdomain.com/v1
+apiVersion: core.kops.aks.microsoft.com/v1
 kind: Operation
 metadata:
-  name: test-operation
-spec:
-  operationType: Upgrade
+  name: sample-operation
+  namespace: default

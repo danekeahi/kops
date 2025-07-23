@@ -39,7 +39,7 @@ func StartHealthMonitoring(azureClient *azure.Client, typedClient kubernetes.Int
 
 	// Get the informer for your Operation CR
 	gvr := schema.GroupVersionResource{
-		Group:    "yourgroup.yourdomain.com",
+		Group:    "core.kops.aks.microsoft.com",
 		Version:  "v1",
 		Resource: "operations",
 	}
@@ -174,6 +174,6 @@ func checkAndAbortIfUnhealthy(opName string, azureClient *azure.Client, typedCli
         return true
 	}
 
-    fmt.Printf("Metrics healthy.")
+    fmt.Println("Metrics healthy.")
     return false
 }

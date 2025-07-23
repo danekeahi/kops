@@ -1,150 +1,163 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kops
+rules:
+- apiGroups: ["core.kops.aks.microsoft.com"]
+  resources: ["operations"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kops
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kops
+subjects:
+- kind: ServiceAccount
+  name: workload-monitor-sa  # Updated to use existing service account
+  namespace: default
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kops-azure-credentials
+  namespace: default
+type: Opaque
+stringData:
+  AZURE_SUBSCRIPTION_ID: "8ecadfc9-d1a3-4ea4-b844-0d9f87e4d7c8"
+  AZURE_RESOURCE_GROUP: "target-rg"
+  AZURE_CLUSTER_NAME: "target-cluster"
+  # Uncomment if needed
+  # AZURE_CLIENT_ID: "62934175-4e80-457f-89f0-903ad1d8197a"
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: health-controller
+  name: kops
   namespace: default
+  labels:
+    app: kops
+    version: "1.0.0"
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
-      app: health-controller
+      app: kops
   template:
     metadata:
       labels:
-        app: health-controller
+        app: kops
+        version: "1.0.0"
+      annotations:
+        prometheus.io/scrape: "false"
     spec:
-      serviceAccountName: workload-monitor-sa
+      serviceAccountName: workload-monitor-sa  # Updated to use existing service account
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
       containers:
-        - name: health-controller
-          image: danekeahi/health-controller:latest
-          imagePullPolicy: Always
-          env:
-            - name: AZURE_SUBSCRIPTION_ID
-              value: "8ecadfc9-d1a3-4ea4-b844-0d9f87e4d7c8"
-            - name: AZURE_RESOURCE_GROUP
-              value: "target-rg"
-            - name: AZURE_CLUSTER_NAME
-              value: "target-cluster"
-            # - name: AZURE_CLIENT_ID
-            #   value: "62934175-4e80-457f-89f0-903ad1d8197a"
-
-
-# apiVersion: rbac.authorization.k8s.io/v1
-# kind: ClusterRole
-# metadata:
-#   name: health-controller
-# rules:
-# - apiGroups: ["yourgroup.yourdomain.com"]       # ✅ your CRD's API group
-#   resources: ["operations"]                        # ✅ name of your CRD (plural)
-#   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-# - apiGroups: [""]
-#   resources: ["configmaps"]
-#   verbs: ["get", "list", "watch", "create", "update", "patch"]
-# ---
-# apiVersion: rbac.authorization.k8s.io/v1
-# kind: ClusterRoleBinding
-# metadata:
-#   name: health-controller
-# roleRef:
-#   apiGroup: rbac.authorization.k8s.io
-#   kind: ClusterRole
-#   name: health-controller
-# subjects:
-# - kind: ServiceAccount
-#   name: workload-monitor-sa
-#   namespace: default
-# ---
-# apiVersion: v1
-# kind: Secret
-# metadata:
-#   name: kops-azure-credentials
-#   namespace: default
-# type: Opaque
-# stringData:
-#   AZURE_SUBSCRIPTION_ID: "8ecadfc9-d1a3-4ea4-b844-0d9f87e4d7c8" # Replace with your Azure subscription ID
-#   AKS_RESOURCE_GROUP: "target-rg" # Replace with your AKS resource group
-#   AKS_CLUSTER_NAME: "target-cluster" # Replace with your AKS cluster name
-# ---
-# apiVersion: apps/v1
-# kind: Deployment
-# metadata:
-#   name: health-controller
-#   namespace: default
-#   labels:
-#     app: health-controller
-#     version: "1.0.0"
-# spec:
-#   replicas: 1
-#   strategy:
-#     type: RollingUpdate
-#     rollingUpdate:
-#       maxUnavailable: 0
-#       maxSurge: 1
-#   selector:
-#     matchLabels:
-#       app: health-controller
-#   template:
-#     metadata:
-#       labels:
-#         app: health-controller
-#         version: "1.0.0"
-#       annotations:
-#         prometheus.io/scrape: "false"  # Set to true if you add Prometheus metrics later
-#     spec:
-#       serviceAccountName: workload-monitor-sa
-#       securityContext:
-#         runAsNonRoot: true
-#         runAsUser: 1000
-#         runAsGroup: 1000
-#         fsGroup: 1000
-#       containers:
-#       - name: health-controller
-#         image: danekeahi/health-controller:latest  # Replace with your actual image
-#         imagePullPolicy: Always
-#         securityContext:
-#           allowPrivilegeEscalation: false
-#           readOnlyRootFilesystem: true
-#           runAsNonRoot: true
-#           runAsUser: 1000
-#           capabilities:
-#             drop:
-#             - ALL
-#         env:
-#         - name: LOG_LEVEL
-#           value: "info"
-#         envFrom:
-#         - secretRef:
-#             name: kops-azure-credentials
-#         resources:
-#           requests:
-#             memory: "64Mi"
-#             cpu: "50m"
-#           limits:
-#             memory: "256Mi"
-#             cpu: "200m"
-#         livenessProbe:
-#           httpGet:
-#             path: /health
-#             port: 8080
-#             scheme: HTTP
-#           initialDelaySeconds: 30
-#           periodSeconds: 30
-#           timeoutSeconds: 5
-#           failureThreshold: 3
-#         readinessProbe:
-#           httpGet:
-#             path: /health
-#             port: 8080
-#             scheme: HTTP
-#           initialDelaySeconds: 10
-#           periodSeconds: 10
-#           timeoutSeconds: 5
-#           failureThreshold: 3
-#       restartPolicy: Always
-#       terminationGracePeriodSeconds: 30
-#       # For using Azure Workload Identity
-#       # nodeSelector:
-#       #   kubernetes.io/os: linux
+      # Health Controller Container
+      - name: health-controller
+        image: danekeahi/health-controller:latest
+        imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+            - ALL
+        envFrom:
+        - secretRef:
+            name: kops-azure-credentials
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+      # Metrics Collector Container
+      - name: metrics-collector
+        image: tanamutu/kops:latest
+        imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+            - ALL
+        envFrom:
+        - secretRef:
+            name: kops-azure-credentials
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+      # Operation Controller Container
+      - name: operation-controller
+        image: ellezaaaa/operation_controller:v2
+        imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+            - ALL
+        envFrom:
+        - secretRef:
+            name: kops-azure-credentials  # Using the same secret as other containers
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30
+      # For using Azure Workload Identity
+      # nodeSelector:
+      #   kubernetes.io/os: linux
 # ---
 # # Optional: ConfigMap for application configuration
 # apiVersion: v1
@@ -162,17 +175,22 @@ spec:
 # apiVersion: v1
 # kind: Service
 # metadata:
-#   name: kops-metrics-collector
+#   name: metrics-collector
 #   namespace: default
 #   labels:
-#     app: kops-metrics-collector
+#     app: metrics-collector
 # spec:
 #   selector:
-#     app: kops-metrics-collector
+#     app: kops
 #   ports:
 #   - name: http
 #     port: 8080
 #     targetPort: 8080
 #     protocol: TCP
 #   type: ClusterIP
- 
+#   ports:
+#   - name: http
+#     port: 8080
+#     targetPort: 8080
+#     protocol: TCP
+#   type: ClusterIP

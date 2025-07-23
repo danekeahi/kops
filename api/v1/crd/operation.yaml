@@ -1,26 +1,33 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: operations.yourgroup.yourdomain.com
+  name: operations.core.kops.aks.microsoft.com
 spec:
-  group: yourgroup.yourdomain.com
+  group: core.kops.aks.microsoft.com
   versions:
-    - name: v1
-      served: true
-      storage: true
-      schema:
-        openAPIV3Schema:
-          type: object
-          properties:
-            spec:
-              type: object
-              properties:
-                operationType:
-                  type: string
+  - name: v1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        description: "Operation represents an Azure AKS cluster operation"
+        properties:
+          apiVersion:
+            type: string
+          kind:
+            type: string
+          metadata:
+            type: object
+        required:
+        - apiVersion
+        - kind
+        - metadata
   scope: Namespaced
   names:
     plural: operations
     singular: operation
     kind: Operation
     shortNames:
-      - op
+    - op
+ 

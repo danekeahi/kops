@@ -7,18 +7,15 @@ import (
 
 	"kops/controllers"
 	"kops/internal/azure"
-	"kops/pkg/kopsconfig"
 )
 
 func main() {
 	ctx := context.Background()
 
 	// Load Azure configuration
-	azureCfg := kopsconfig.AzureConfig{
-		SubscriptionID:    os.Getenv("AZURE_SUBSCRIPTION_ID"),
-		ResourceGroupName: os.Getenv("AZURE_RESOURCE_GROUP"),
-		ClusterName:       os.Getenv("AZURE_CLUSTER_NAME"),
-	}
+	SubscriptionID := os.Getenv("AZURE_SUBSCRIPTION_ID")
+	ResourceGroupName := os.Getenv("AZURE_RESOURCE_GROUP")
+	ClusterName := os.Getenv("AZURE_CLUSTER_NAME")
 
 	// Authenticate using default Azure credentials
 	cred, err := azure.GetDefaultAzureCredential()
@@ -28,14 +25,14 @@ func main() {
 	}
 	
 	// Create AKS client
-	aksClient, err := azure.GetAKSClient(azureCfg.SubscriptionID, azureCfg.ResourceGroupName, azureCfg.ClusterName, cred)
+	aksClient, err := azure.GetAKSClient(SubscriptionID, ResourceGroupName, ClusterName, cred)
 	if err != nil {
 		fmt.Printf("Error creating AKS client: %v\n", err)
 		return
 	}
 	
 	// Fetch kubeconfig from target AKS cluster
-	restCfg, err := azure.GetKubeRestConfig(ctx, aksClient, azureCfg.ResourceGroupName, azureCfg.ClusterName)
+	restCfg, err := azure.GetKubeRestConfig(ctx, aksClient, ResourceGroupName, ClusterName)
 	if err != nil {
 		fmt.Printf("Error retrieving kubeconfig: %v\n", err)
 		return

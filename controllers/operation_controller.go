@@ -6,66 +6,170 @@ import (
 	"strings"
 	"time"
 
-	"github.com/danekeahi/kops/internal/azure"
-
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"kops/internal/azure"
 )
 
 const (
-	RequeueInterval = 30 * time.Second // Changed to 30s as requested
+	PollingInterval = 30 * time.Second
+	MaxRetries      = 3
+	RetryDelay      = 5 * time.Second
 )
 
-// AzureClientInterface defines the interface for Azure operations
-type AzureClientInterface interface {
-	GetClusterOperationStatus(ctx context.Context) (*azure.OperationStatus, error)
+type OperationReconciler struct {
+	Client        client.Client
+	Azure         azure.AzureClientInterface
+	Namespace     string
+	ResourceGroup string
+	ClusterName   string
+
+	isRunning bool
+	stopCh    chan struct{}
 }
 
-type OperationReconciler struct {
-	client.Client
-	Azure         AzureClientInterface
+type Config struct {
+	Namespace     string
 	ResourceGroup string
 	ClusterName   string
 }
 
-// SetupWithManager sets up the controller with the manager
-func (r *OperationReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	op := &unstructured.Unstructured{}
-	op.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "core.kops.aks.microsoft.com",
-		Version: "v1",
-		Kind:    "Operation",
-	})
-
-	return ctrl.NewControllerManagedBy(mgr).
-		For(op).
-		Complete(r)
-}
-
-// Reconcile is triggered when a new Operation CR is created or updated
-// This implements the logic: always observing for new ongoing operations,
-// create CR when operation is running, delete CR when operation ends, resync every 30s
-func (r *OperationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	klog.Infof("Reconciling Operation CR: %s", req.Name)
-
-	// Get current Azure operation status
-	state, err := r.Azure.GetClusterOperationStatus(ctx)
-	if err != nil {
-		klog.Errorf("Failed to get Azure cluster operation status: %v", err)
-		return ctrl.Result{RequeueAfter: RequeueInterval}, err
+func NewOperationReconciler(client client.Client, azureClient azure.AzureClientInterface, config Config) (*OperationReconciler, error) {
+	if client == nil {
+		return nil, fmt.Errorf("client cannot be nil")
+	}
+	if azureClient == nil {
+		return nil, fmt.Errorf("azure client cannot be nil")
+	}
+	if config.ResourceGroup == "" {
+		return nil, fmt.Errorf("resource group cannot be empty")
+	}
+	if config.ClusterName == "" {
+		return nil, fmt.Errorf("cluster name cannot be empty")
+	}
+	if config.Namespace == "" {
+		config.Namespace = "default"
 	}
 
-	klog.Infof("Azure operation status: inProgress=%v, status=%s", state.InProgress, state.Status)
+	return &OperationReconciler{
+		Client:        client,
+		Azure:         azureClient,
+		Namespace:     config.Namespace,
+		ResourceGroup: config.ResourceGroup,
+		ClusterName:   config.ClusterName,
+		stopCh:        make(chan struct{}),
+	}, nil
+}
 
-	// Generate operation name based on current state
+func (r *OperationReconciler) Start(ctx context.Context) error {
+	if r.isRunning {
+		return fmt.Errorf("already running")
+	}
+
+	klog.InfoS("Starting monitoring", "cluster", r.ClusterName, "namespace", r.Namespace)
+
+	// Quick validation
+	if err := r.validateConnections(ctx); err != nil {
+		return fmt.Errorf("validation failed: %w", err)
+	}
+
+	r.isRunning = true
+	go r.monitoringLoop(ctx)
+
+	klog.InfoS("Monitoring started")
+	return nil
+}
+
+func (r *OperationReconciler) Stop() {
+	if !r.isRunning {
+		return
+	}
+
+	klog.InfoS("Stopping monitoring")
+	close(r.stopCh)
+	r.isRunning = false
+}
+
+func (r *OperationReconciler) validateConnections(ctx context.Context) error {
+	// Test Azure
+	testCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	if _, err := r.Azure.GetClusterOperationStatus(testCtx); err != nil {
+		return fmt.Errorf("azure test failed: %w", err)
+	}
+
+	// Test Kubernetes - try to list in namespace
+	list := &unstructured.UnstructuredList{}
+	list.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "core.kops.aks.microsoft.com",
+		Version: "v1",
+		Kind:    "OperationList",
+	})
+
+	if err := r.Client.List(testCtx, list, client.InNamespace(r.Namespace)); err != nil {
+		return fmt.Errorf("kubernetes test failed: %w", err)
+	}
+
+	return nil
+}
+
+func (r *OperationReconciler) monitoringLoop(ctx context.Context) {
+	ticker := time.NewTicker(PollingInterval)
+	defer ticker.Stop()
+
+	// Initial sync
+	r.syncWithRetry(ctx)
+
+	for {
+		select {
+		case <-ticker.C:
+			r.syncWithRetry(ctx)
+		case <-r.stopCh:
+			klog.InfoS("Monitoring loop stopped")
+			return
+		case <-ctx.Done():
+			klog.InfoS("Context done, stopping")
+			return
+		}
+	}
+}
+
+func (r *OperationReconciler) syncWithRetry(ctx context.Context) {
+	for attempt := 1; attempt <= MaxRetries; attempt++ {
+		if err := r.syncOperations(ctx); err != nil {
+			klog.ErrorS(err, "Sync failed", "attempt", attempt)
+			if attempt < MaxRetries {
+				time.Sleep(RetryDelay)
+				continue
+			}
+		} else {
+			return // Success
+		}
+	}
+}
+
+func (r *OperationReconciler) syncOperations(ctx context.Context) error {
+	// Get Azure status
+	azureCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	state, err := r.Azure.GetClusterOperationStatus(azureCtx)
+	if err != nil {
+		return fmt.Errorf("failed to get Azure status: %w", err)
+	}
+
+	klog.V(2).InfoS("Azure status", "inProgress", state.InProgress, "type", state.Type)
+
+	// Generate CR name
 	opName := r.generateOperationName(state)
 
-	// Check if Operation CR exists
+	// Check if CR exists
 	existing := &unstructured.Unstructured{}
 	existing.SetGroupVersionKind(schema.GroupVersionKind{
 		Group:   "core.kops.aks.microsoft.com",
@@ -73,188 +177,139 @@ func (r *OperationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		Kind:    "Operation",
 	})
 
-	err = r.Get(ctx, types.NamespacedName{Name: opName, Namespace: "default"}, existing)
+	err = r.Client.Get(ctx, types.NamespacedName{
+		Name:      opName,
+		Namespace: r.Namespace,
+	}, existing)
+
 	exists := err == nil
-
-	// Core checking logic implementation
-	if state.InProgress {
-		// Operation is ongoing - create CR if it doesn't exist
-		if !exists {
-			cr := r.createOperationCR(opName, state)
-			if err := r.Create(ctx, cr); err != nil {
-				klog.Errorf("Failed to create Operation CR '%s': %v", opName, err)
-				return ctrl.Result{RequeueAfter: RequeueInterval}, err
-			}
-			klog.Infof("Created Operation CR '%s' for ongoing operation", opName)
-		} else {
-			klog.Infof("Operation CR '%s' already exists for ongoing operation", opName)
-		}
-		// Continue monitoring the ongoing operation
-		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
-	} else {
-		// Operation completed or no operation running - delete any existing CRs
-		if exists {
-			if err := r.Delete(ctx, existing); err != nil && !errors.IsNotFound(err) {
-				klog.Errorf("Failed to delete Operation CR '%s': %v", opName, err)
-				return ctrl.Result{RequeueAfter: RequeueInterval}, err
-			}
-			klog.Infof("Deleted Operation CR '%s' as operation completed", opName)
-		}
-
-		// Clean up any other operation CRs that might exist
-		if err := r.cleanupAllOperationCRs(ctx); err != nil {
-			klog.Errorf("Failed to cleanup operation CRs: %v", err)
-		}
-
-		// Resync after 30s to check for new operations
-		klog.Infof("No operation in progress, requeuing after %v to check for new operations", RequeueInterval)
-		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
+	if err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to check CR: %w", err)
 	}
+
+	// Core logic: simple binary state
+	if state.InProgress && !exists {
+		return r.createCR(ctx, opName, state)
+	} else if !state.InProgress && exists {
+		return r.deleteCR(ctx, existing)
+	}
+
+	return nil
 }
 
-// createOperationCR creates a new Operation CR
-func (r *OperationReconciler) createOperationCR(name string, state *azure.OperationStatus) *unstructured.Unstructured {
+func (r *OperationReconciler) createCR(ctx context.Context, name string, state azure.OperationStatus) error {
+	klog.InfoS("Creating CR", "name", name)
+
 	cr := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "core.kops.aks.microsoft.com/v1",
 			"kind":       "Operation",
 			"metadata": map[string]interface{}{
 				"name":      name,
-				"namespace": "default",
+				"namespace": r.Namespace,
 				"labels": map[string]interface{}{
 					"azure.cluster.name":     r.ClusterName,
 					"azure.resource.group":   r.ResourceGroup,
-					"azure.operation.status": state.Status,
+					"azure.operation.type":   state.Type,
+					"azure.operation.status": "in-progress",
 				},
 				"annotations": map[string]interface{}{
+					"azure.operation.id":      state.OperationID,
 					"azure.operation.started": time.Now().Format(time.RFC3339),
 				},
 			},
 			"spec": map[string]interface{}{
-				"operationStatus": state.Status,
-				"operationType":   state.OperationType,
-				"clusterName":     r.ClusterName,
-				"resourceGroup":   r.ResourceGroup,
-				"inProgress":      state.InProgress,
+				"clusterName":   r.ClusterName,
+				"resourceGroup": r.ResourceGroup,
+				"operationType": state.Type,
+				"operationID":   state.OperationID,
+				"azureStatus":   state.Status,
 			},
 			"status": map[string]interface{}{
-				"phase":       "Running",
+				"phase":       "InProgress",
+				"azureStatus": state.Status,
 				"lastChecked": time.Now().Format(time.RFC3339),
 			},
 		},
 	}
 
-	cr.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "core.kops.aks.microsoft.com",
-		Version: "v1",
-		Kind:    "Operation",
-	})
-
-	return cr
-}
-
-// generateOperationName creates a consistent name for operation CRs
-// Ensures the name follows Kubernetes RFC 1123 subdomain naming conventions
-func (r *OperationReconciler) generateOperationName(state *azure.OperationStatus) string {
-	// Convert cluster name to lowercase for Kubernetes compliance
-	clusterName := strings.ToLower(r.ClusterName)
-
-	var operationName string
-	if state.OperationType != "" {
-		// Ensure operation type is lowercase
-		operationType := strings.ToLower(state.OperationType)
-		operationName = fmt.Sprintf("op-%s-%s", clusterName, operationType)
-	} else {
-		// Ensure status is lowercase
-		status := strings.ToLower(state.Status)
-		operationName = fmt.Sprintf("op-%s-%s", clusterName, status)
+	if err := r.Client.Create(ctx, cr); err != nil {
+		return fmt.Errorf("failed to create CR: %w", err)
 	}
 
-	// Additional safety: ensure the name is valid for Kubernetes RFC 1123
-	// Replace any remaining invalid characters with hyphens
-	operationName = strings.ReplaceAll(operationName, "_", "-")
-	operationName = strings.ReplaceAll(operationName, " ", "-")
-	operationName = strings.ReplaceAll(operationName, ".", "-")
-
-	// Ensure the final name is lowercase (extra safety)
-	operationName = strings.ToLower(operationName)
-
-	return operationName
+	klog.InfoS("CR created", "name", name)
+	return nil
 }
 
-// cleanupAllOperationCRs removes all Operation CRs when no operations are running
-func (r *OperationReconciler) cleanupAllOperationCRs(ctx context.Context) error {
-	// List all Operation CRs
-	operationList := &unstructured.UnstructuredList{}
-	operationList.SetGroupVersionKind(schema.GroupVersionKind{
+func (r *OperationReconciler) deleteCR(ctx context.Context, cr *unstructured.Unstructured) error {
+	name := cr.GetName()
+	klog.InfoS("Deleting CR", "name", name)
+
+	if err := r.Client.Delete(ctx, cr); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete CR: %w", err)
+	}
+
+	klog.InfoS("CR deleted", "name", name)
+	return nil
+}
+
+func (r *OperationReconciler) generateOperationName(state azure.OperationStatus) string {
+	cluster := strings.ToLower(r.ClusterName)
+	opType := strings.ToLower(state.Type)
+
+	// Clean for Kubernetes
+	cluster = strings.ReplaceAll(cluster, ".", "-")
+	cluster = strings.ReplaceAll(cluster, "_", "-")
+	opType = strings.ReplaceAll(opType, ".", "-")
+	opType = strings.ReplaceAll(opType, "_", "-")
+
+	name := fmt.Sprintf("azure-op-%s-%s", cluster, opType)
+
+	// Truncate if too long
+	if len(name) > 63 {
+		name = name[:63]
+	}
+
+	return name
+}
+
+func (r *OperationReconciler) CleanupOrphanedCRs(ctx context.Context) error {
+	klog.InfoS("Cleaning up orphaned CRs")
+
+	list := &unstructured.UnstructuredList{}
+	list.SetGroupVersionKind(schema.GroupVersionKind{
 		Group:   "core.kops.aks.microsoft.com",
 		Version: "v1",
 		Kind:    "OperationList",
 	})
 
-	if err := r.List(ctx, operationList, client.InNamespace("default")); err != nil {
-		return fmt.Errorf("failed to list Operation CRs: %w", err)
+	listOpts := []client.ListOption{
+		client.InNamespace(r.Namespace),
+		client.MatchingLabels{"azure.cluster.name": r.ClusterName},
 	}
 
-	// Delete all Operation CRs
-	for i := range operationList.Items {
-		op := &operationList.Items[i]
-		if err := r.Delete(ctx, op); err != nil && !errors.IsNotFound(err) {
-			klog.Errorf("Failed to delete Operation CR '%s': %v", op.GetName(), err)
-			continue
+	if err := r.Client.List(ctx, list, listOpts...); err != nil {
+		return fmt.Errorf("failed to list CRs: %w", err)
+	}
+
+	deleted := 0
+	for _, item := range list.Items {
+		if err := r.Client.Delete(ctx, &item); err != nil && !errors.IsNotFound(err) {
+			klog.ErrorS(err, "Failed to delete CR", "name", item.GetName())
+		} else {
+			deleted++
 		}
-		klog.Infof("Cleaned up Operation CR '%s'", op.GetName())
 	}
 
+	klog.InfoS("Cleanup complete", "deleted", deleted)
 	return nil
 }
 
-// StartPolling starts a background goroutine that continuously monitors Azure for new operations
-// This ensures the controller always observes for new ongoing operations
-func (r *OperationReconciler) StartPolling(ctx context.Context) {
-	klog.Infof("Starting Azure operation polling every %v", RequeueInterval)
-
-	ticker := time.NewTicker(RequeueInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			if err := r.discoverAndTriggerReconciliation(ctx); err != nil {
-				klog.Errorf("Failed to discover operations: %v", err)
-			}
-		case <-ctx.Done():
-			klog.Info("Stopping Azure operation polling")
-			return
-		}
+func (r *OperationReconciler) GetStatus() map[string]interface{} {
+	return map[string]interface{}{
+		"running":         r.isRunning,
+		"cluster":         r.ClusterName,
+		"namespace":       r.Namespace,
+		"pollingInterval": PollingInterval.String(),
 	}
-}
-
-// discoverAndTriggerReconciliation checks for Azure operations and triggers reconciliation
-func (r *OperationReconciler) discoverAndTriggerReconciliation(ctx context.Context) error {
-	// Get current Azure operation status
-	state, err := r.Azure.GetClusterOperationStatus(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get cluster operation status: %w", err)
-	}
-
-	klog.V(2).Infof("Polling Azure: inProgress=%v, status=%s, operationType=%s",
-		state.InProgress, state.Status, state.OperationType)
-
-	// Always trigger reconciliation to ensure proper CR management
-	operationName := r.generateOperationName(state)
-	req := ctrl.Request{
-		NamespacedName: types.NamespacedName{
-			Name:      operationName,
-			Namespace: "default",
-		},
-	}
-
-	// Execute reconciliation
-	_, err = r.Reconcile(ctx, req)
-	if err != nil {
-		klog.Errorf("Failed to reconcile operation '%s': %v", operationName, err)
-	}
-
-	return nil
 }

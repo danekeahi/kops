@@ -5,21 +5,28 @@ metadata:
 spec:
   group: core.kops.aks.microsoft.com
   versions:
-    - name: v1
-      served: true
-      storage: true
-      schema:
-        openAPIV3Schema:
-          type: object
-          properties:
-            status:
-              type: object
-            spec:
-              type: object
+  - name: v1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        description: "Operation represents an Azure AKS cluster operation"
+        properties:
+          apiVersion:
+            type: string
+          kind:
+            type: string
+          metadata:
+            type: object
+        required:
+        - apiVersion
+        - kind
+        - metadata
   scope: Namespaced
   names:
     plural: operations
     singular: operation
     kind: Operation
     shortNames:
-      - op
+    - op

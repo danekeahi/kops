@@ -40,8 +40,9 @@ metadata:
 type: Opaque
 stringData:
   AZURE_SUBSCRIPTION_ID: "feb5b150-60fe-4441-be73-8c02a524f55a" # Replace with your Azure subscription ID
-  AKS_RESOURCE_GROUP: "tanamutu-rg" # Replace with your AKS resource group
-  AKS_CLUSTER_NAME: "target" # Replace with your AKS cluster name
+  AZURE_RESOURCE_GROUP: "tanamutu-rg" # Replace with your AKS resource group
+  AZURE_CLUSTER_NAME: "target" # Replace with your AKS cluster name
+  OPERATION_CR_NAMESPACE: "default" # Replace with your operation CR namespace
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -87,7 +88,6 @@ spec:
           capabilities:
             drop:
             - ALL
-        env:
         envFrom:
         - secretRef:
             name: kops-azure-credentials
@@ -116,8 +116,39 @@ spec:
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 3
-      restartPolicy: Always
-      terminationGracePeriodSeconds: 30
-      # For using Azure Workload Identity
-      # nodeSelector:
-      #   kubernetes.io/os: linux
+      - name: operation-controller
+        image: ellezaaaa/operation_controller:v2
+        imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+            - ALL
+        envFrom:
+        - secretRef:
+            name: kops-azure-credentials
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        # Add health probes if the operation-controller has health endpoints
+        livenessProbe:
+           httpGet:
+             path: /health
+             port: 8081
+             scheme: HTTP
+           initialDelaySeconds: 30
+           periodSeconds: 30
+        readinessProbe:
+           httpGet:
+             path: /health
+             port: 8081
+             scheme: HTTP
+           initialDelaySeconds: 10
+           periodSeconds: 10

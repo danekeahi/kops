@@ -33,8 +33,8 @@ func main() {
 	}()
 
 	subscriptionID := os.Getenv("AZURE_SUBSCRIPTION_ID")
-	resourceGroup := os.Getenv("AKS_RESOURCE_GROUP")
-	clusterName := os.Getenv("AKS_CLUSTER_NAME")
+	resourceGroup := os.Getenv("AZURE_RESOURCE_GROUP")
+	clusterName := os.Getenv("AZURE_CLUSTER_NAME")
 
 	kubeClient, err := client.GetKubeClientForAKSCluster(context.Background(), subscriptionID, resourceGroup, clusterName)
 	if err != nil {

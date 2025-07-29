@@ -9,6 +9,9 @@ rules:
 - apiGroups: [""]
   resources: ["configmaps"]
   verbs: ["get", "list", "watch", "create", "update", "patch"]
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["pods", "nodes", "services"]
+  verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -24,17 +27,45 @@ subjects:
   namespace: default
 ---
 apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: workload-monitor-sa
+  namespace: default
+  annotations:
+    azure.workload.identity/client-id: 9665635e-0bc7-436c-b7ab-48d1d6b45295
+---
+apiVersion: v1
 kind: Secret
 metadata:
   name: kops-azure-credentials
   namespace: default
 type: Opaque
 stringData:
-  AZURE_SUBSCRIPTION_ID: "8ecadfc9-d1a3-4ea4-b844-0d9f87e4d7c8"
-  AZURE_RESOURCE_GROUP: "target-rg"
-  AZURE_CLUSTER_NAME: "target-cluster"
-  # Uncomment if needed
-  # AZURE_CLIENT_ID: "62934175-4e80-457f-89f0-903ad1d8197a"
+  AZURE_SUBSCRIPTION_ID: "8ecadfc9-d1a3-4ea4-b844-0d9f87e4d7c8" # Azure subscription ID
+  AZURE_RESOURCE_GROUP: "target-rg" # Resource group for the AKS cluster
+  AZURE_CLUSTER_NAME: "test-upgrade" # Name of the AKS cluster
+  OPERATION_CR_NAMESPACE: "default" # Namespace for operation controller
+  CUSTOMER_HEALTH_URL: ""  # Example URL for custom health checks
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: metric-thresholds
+  namespace: default
+data:
+  thresholds.json: |
+    {
+      "thresholds": {
+        "crashing_pods_percent": 10.0, 
+        "pending_pods_percent": 20.0,
+        "not_ready_nodes_percent": 10.0,
+        "restart_count": 100.0,
+        "restart_percent": 50.0,
+        "crash_loop_percent": 5.0,
+        "cpu_usage_percent": 80.0,
+        "memory_usage_percent": 85.0
+      }
+    }
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -155,42 +186,3 @@ spec:
             cpu: "200m"
       restartPolicy: Always
       terminationGracePeriodSeconds: 30
-      # For using Azure Workload Identity
-      # nodeSelector:
-      #   kubernetes.io/os: linux
-# ---
-# # Optional: ConfigMap for application configuration
-# apiVersion: v1
-# kind: ConfigMap
-# metadata:
-#   name: kops-config
-#   namespace: default
-# data:
-#   config.yaml: |
-#     log_level: info
-#     collection_interval: "1m"
-#     metrics_store_name: "metrics-store"
-# ---
-# # Optional: Service for future HTTP endpoints
-# apiVersion: v1
-# kind: Service
-# metadata:
-#   name: metrics-collector
-#   namespace: default
-#   labels:
-#     app: metrics-collector
-# spec:
-#   selector:
-#     app: kops
-#   ports:
-#   - name: http
-#     port: 8080
-#     targetPort: 8080
-#     protocol: TCP
-#   type: ClusterIP
-#   ports:
-#   - name: http
-#     port: 8080
-#     targetPort: 8080
-#     protocol: TCP
-#   type: ClusterIP

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-
+	"k8s.io/client-go/rest"
 	"kops/controllers"
 	"kops/internal/azure"
 )
@@ -37,11 +37,25 @@ func main() {
 		fmt.Printf("Error retrieving kubeconfig: %v\n", err)
 		return
 	}
+
+	// Fetch kubeconfig from the base AKS cluster
+	baseRestCfg, err := rest.InClusterConfig()
+	if err != nil {
+		fmt.Printf("Error getting in-cluster config: %v\n", err)
+		return
+	}
 	
 	// Create typed Kubernetes client
 	typedClient, err := azure.GetTypedClient(restCfg)
 	if err != nil {
 		fmt.Printf("Error creating typed Kubernetes client: %v\n", err)
+		return
+	}
+
+	// Create base typed Kubernetes client
+	baseTypedClient, err := azure.GetTypedClient(baseRestCfg)
+	if err != nil {
+		fmt.Printf("Error creating base typed Kubernetes client: %v\n", err)
 		return
 	}
 
@@ -53,7 +67,7 @@ func main() {
 	}
 
 	// Start health monitoring
-	err = controllers.StartHealthMonitoring(aksClient, typedClient, dynClient)
+	err = controllers.StartHealthMonitoring(aksClient, typedClient, dynClient, baseTypedClient)
 	if err != nil {
 		fmt.Printf("Failed to start health monitoring: %v\n", err)
 		return

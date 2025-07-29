@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-health-server
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-health-server
+  template:
+    metadata:
+      labels:
+        app: test-health-server
+    spec:
+      containers:
+      - name: test-health-server
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        command: ["/bin/sh"]
+        args:
+        - -c
+        - |
+          apk add --no-cache curl;
+          mkdir -p /usr/share/nginx/html;
+          cat > /usr/share/nginx/html/healthz <<EOF
+          {"status":"healthy","timestamp":"$(date -Iseconds)"}
+          EOF
+          nginx;
+          while true; do
+            # Simulate different responses
+            RANDOM_NUM=$(expr $RANDOM % 2)
+            if [ \$RANDOM_NUM -eq 0 ]; then
+              echo '{"status":"error"}' > /usr/share/nginx/html/healthz;
+              echo "Simulating error response";
+            else
+              echo '{"status":"healthy","timestamp":"'$(date -Iseconds)'"}' > /usr/share/nginx/html/healthz;
+            fi;
+            sleep 30;
+          done
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-health-server
+  namespace: default
+spec:
+  selector:
+    app: test-health-server
+  ports:
+  - port: 80
+    targetPort: 80
+  type: LoadBalancer
+ 

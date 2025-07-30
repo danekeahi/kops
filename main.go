@@ -10,9 +10,12 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
 
 	"kops/client"
 	"kops/metric_collector"
+
+	metrics "k8s.io/metrics/pkg/client/clientset/versioned"
 )
 
 func main() {
@@ -39,6 +42,18 @@ func main() {
 	kubeClient, err := client.GetKubeClientForAKSCluster(context.Background(), subscriptionID, resourceGroup, clusterName)
 	if err != nil {
 		fmt.Printf("Error creating clientset: %v\n", err)
+		return
+	}
+
+	// Create a metrics client to collect resource usage
+	metricsConfig, err := rest.InClusterConfig()
+	if err != nil {
+		fmt.Printf("Error creating in-cluster config: %v\n", err)
+		return
+	}
+	metricsClient, err := metrics.NewForConfig(metricsConfig)
+	if err != nil {
+		fmt.Printf("Error creating metrics client: %v\n", err)
 		return
 	}
 
@@ -104,7 +119,7 @@ func main() {
 
 	// Collect metrics immediately on startup
 	fmt.Println("\n=== Initial metrics collection ===")
-	err = metric_collector.CollectAndStoreMetrics(kubeClient)
+	err = metric_collector.CollectAndStoreMetrics(kubeClient, metricsClient)
 	if err != nil {
 		fmt.Printf("Error collecting initial metrics: %v\n", err)
 	} else {
@@ -120,7 +135,7 @@ func main() {
 		fmt.Printf("\n=== Metrics collection #%d ===\n", collectionCount)
 		fmt.Printf("Time: %s\n", time.Now().Format("2006-01-02 15:04:05"))
 
-		err = metric_collector.CollectAndStoreMetrics(kubeClient)
+		err = metric_collector.CollectAndStoreMetrics(kubeClient, metricsClient)
 		if err != nil {
 			fmt.Printf("Error collecting metrics: %v\n", err)
 			// Continue running even if one collection fails

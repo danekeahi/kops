@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-health
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mock-health
+  template:
+    metadata:
+      labels:
+        app: mock-health
+    spec:
+      containers:
+      - name: mock-health
+        image: hashicorp/http-echo
+        args:
+          - "-listen=:8080"
+          - "-text=ok" # Always returns 200 OK with "ok"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-health
+spec:
+  selector:
+    app: mock-health
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
+  type: LoadBalancer

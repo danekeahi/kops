@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"net/http"
+	"os"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	metrics "k8s.io/metrics/pkg/client/clientset/versioned"
 )
 
 // MetricsData struct holds all the collected metrics which we will send to the ConfigMap
@@ -17,6 +21,8 @@ type MetricsData struct {
 	PodMetrics     PodMetrics     `json:"pod_metrics"`
 	NodeMetrics    NodeMetrics    `json:"node_metrics"`
 	ContainerStats ContainerStats `json:"container_stats"`
+	ResourceUsage  ResourceUsage  `json:"resource_usage"`
+	ServiceHealth  ServiceHealth  `json:"serviceHealth"`
 }
 
 type PodMetrics struct {
@@ -45,12 +51,25 @@ type ContainerStats struct {
 	CrashLoopPercent    float64 `json:"crash_loop_percent"`
 }
 
+type ServiceHealth struct {
+	URL          string `json:"url"`
+	Healthy      bool   `json:"healthy"`
+	ResponseTime int64  `json:"response_time"`
+	Timestamp    string `json:"timestamp"`
+	ErrorMessage string `json:"error_message,omitempty"`
+}
+
+type ResourceUsage struct {
+	CPUUsagePercent    float64 `json:"cpu_usage_percent"`
+	MemoryUsagePercent float64 `json:"memory_usage_percent"`
+}
+
 // CollectAndStoreMetrics collects all Kubernetes metrics and stores them in the ConfigMap
-func CollectAndStoreMetrics(kubeClient kubernetes.Interface) error {
+func CollectAndStoreMetrics(kubeClient kubernetes.Interface, metricsClient *metrics.Clientset) error {
 	fmt.Println("Starting metrics collection...")
 
 	// Collect all metrics
-	metrics, err := collectMetrics(kubeClient)
+	metrics, err := collectMetrics(kubeClient, metricsClient)
 	if err != nil {
 		return fmt.Errorf("error collecting metrics: %v", err)
 	}
@@ -74,13 +93,26 @@ func CollectAndStoreMetrics(kubeClient kubernetes.Interface) error {
 	fmt.Printf("- Containers: %d total, %.1f%% in crash loop\n",
 		metrics.ContainerStats.TotalContainers,
 		metrics.ContainerStats.CrashLoopPercent)
+	fmt.Printf("- Service Health: %s (%dms response time)\n",
+		getHealthStatus(metrics.ServiceHealth.Healthy),
+		metrics.ServiceHealth.ResponseTime)
+	fmt.Printf("- Cluster Resource Usage: CPU=%.1f%%, Memory=%.1f%%\n",
+		metrics.ResourceUsage.CPUUsagePercent,
+		metrics.ResourceUsage.MemoryUsagePercent)
 
 	return nil
 }
 
-func collectMetrics(client kubernetes.Interface) (*MetricsData, error) {
+func getHealthStatus(healthy bool) string {
+	if healthy {
+		return "HEALTHY"
+	}
+	return "UNHEALTHY"
+}
+
+func collectMetrics(client kubernetes.Interface, metricsClient *metrics.Clientset) (*MetricsData, error) {
 	metrics := &MetricsData{
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Timestamp: time.Now().Format(time.RFC3339),
 	}
 
 	// Collect Pod Metrics
@@ -104,7 +136,19 @@ func collectMetrics(client kubernetes.Interface) (*MetricsData, error) {
 	}
 	metrics.ContainerStats = *containerStats
 
+	// Collect Service Health
+	serviceHealth := CollectServiceHealth()
+	metrics.ServiceHealth = *serviceHealth
+
+	// Collect Resource Usage Metrics
+	resourceUsage, err := collectResourceUsageMetrics(metricsClient, client)
+	if err != nil {
+		return nil, fmt.Errorf("failed to collect resource usage metrics: %v", err)
+	}
+	metrics.ResourceUsage = *resourceUsage
+
 	return metrics, nil
+
 }
 
 func collectPodMetrics(client kubernetes.Interface) (*PodMetrics, error) {
@@ -227,6 +271,107 @@ func collectContainerStats(client kubernetes.Interface) (*ContainerStats, error)
 	return stats, nil
 }
 
+func CollectServiceHealth() *ServiceHealth {
+	healthURL := os.Getenv("CUSTOMER_HEALTH_URL")
+
+	health := &ServiceHealth{
+		URL:       healthURL,
+		Healthy:   false,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	// If no URL is configured, mark as healthy but with a note, that way we don't abort the controller
+	if healthURL == "" {
+		health.Healthy = true
+		health.ErrorMessage = "No health URL configured"
+		health.ResponseTime = 0
+		return health
+	}
+
+	// Create HTTP client with 5-second timeout
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	startTime := time.Now()
+
+	resp, err := client.Get(healthURL)
+
+	responseTime := time.Since(startTime).Milliseconds()
+	health.ResponseTime = responseTime
+
+	if err != nil {
+		health.Healthy = false
+		health.ErrorMessage = fmt.Sprintf("Request failed: %v", err)
+		fmt.Printf("Health check failed for %s: %v (response time: %dms)\n", healthURL, err, responseTime)
+		return health
+	}
+	defer resp.Body.Close()
+
+	// Mark healthy if status code is 2xx or 3xx
+	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+		health.Healthy = true
+	} else {
+		health.Healthy = false
+		health.ErrorMessage = fmt.Sprintf("HTTP %d", resp.StatusCode)
+	}
+
+	return health
+}
+
+func collectResourceUsageMetrics(metricsClient *metrics.Clientset, kubeClient kubernetes.Interface) (*ResourceUsage, error) {
+	ctx := context.Background()
+
+	// 1. Get total allocatable resources across all nodes
+	nodeList, err := kubeClient.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("error getting nodes: %v", err)
+	}
+
+	var totalClusterCPU int64 = 0 // millicores
+	var totalClusterMem int64 = 0 // bytes
+
+	for _, node := range nodeList.Items {
+		totalClusterCPU += node.Status.Allocatable.Cpu().MilliValue()
+		totalClusterMem += node.Status.Allocatable.Memory().Value()
+	}
+
+	fmt.Printf("Total cluster allocatable resources: CPU=%d millicores, Memory=%d bytes\n",
+		totalClusterCPU, totalClusterMem)
+
+	// If allocatable resources are zero, we can't calculate usage percentages
+	if totalClusterCPU == 0 || totalClusterMem == 0 {
+		return nil, fmt.Errorf("cluster allocatable capacity is zero — check node metrics or RBAC permissions")
+	}
+
+	// 2. Get pod usage metrics from metrics-server
+	podMetricsList, err := metricsClient.MetricsV1beta1().PodMetricses("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("error getting pod metrics: %v", err)
+	}
+
+	var totalCPUUsed int64 = 0
+	var totalMemUsed int64 = 0
+
+	// Sum CPU and memory usage for all pods/containers
+	for _, podMetric := range podMetricsList.Items {
+		for _, containerMetric := range podMetric.Containers {
+			totalCPUUsed += containerMetric.Usage.Cpu().MilliValue() // millicores
+			totalMemUsed += containerMetric.Usage.Memory().Value()   // bytes
+		}
+	}
+
+	fmt.Printf("Total pod resource usage: CPU=%d millicores, Memory=%d bytes\n",
+		totalCPUUsed, totalMemUsed)
+
+	// 3. Calculate usage percentages relative to cluster allocatable capacity
+	usage := &ResourceUsage{}
+	usage.CPUUsagePercent = math.Round(float64(totalCPUUsed)/float64(totalClusterCPU)*100*100) / 100
+	usage.MemoryUsagePercent = math.Round(float64(totalMemUsed)/float64(totalClusterMem)*100*100) / 100
+
+	return usage, nil
+}
+
 func updateMetricsConfigMap(client kubernetes.Interface, newMetrics *MetricsData) error {
 	configMapName := "metrics-store"
 	namespace := "default"
@@ -276,8 +421,7 @@ func updateMetricsConfigMap(client kubernetes.Interface, newMetrics *MetricsData
 	// Append new metrics to history
 	metricsHistory = append(metricsHistory, *newMetrics)
 
-	// Keep only the last 100 entries to prevent ConfigMap from growing too large
-	// (ConfigMaps have a size limit of ~1MB)
+	// Keep only the last 100 entries to prevent ConfigMap from growing too large (ConfigMaps have a size limit of ~1MB)
 	maxHistoryEntries := 100
 	if len(metricsHistory) > maxHistoryEntries {
 		// Keep the most recent entries

@@ -109,12 +109,12 @@ func main() {
 		}
 	}
 
-	// Set up metrics collection every 1 minute
-	fmt.Println("\nStarting continuous metrics collection (every 1 minute)...")
+	// Set up metrics collection every 30 seconds
+	fmt.Println("\nStarting continuous metrics collection (every 30 seconds)...")
 	fmt.Println("Press Ctrl+C to stop")
 
-	// Create a ticker that triggers every 1 minute
-	ticker := time.NewTicker(1 * time.Minute)
+	// Create a ticker that triggers every 30 seconds
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	// Collect metrics immediately on startup
@@ -128,7 +128,7 @@ func main() {
 
 	// Start the continuous collection loop
 	collectionCount := 1
-	fmt.Printf("\n Next collection will be at %s\n", time.Now().Add(1*time.Minute).Format("15:04:05"))
+	fmt.Printf("\n Next collection will be at %s\n", time.Now().Add(30*time.Second).Format("15:04:05"))
 
 	for range ticker.C {
 		collectionCount++
@@ -144,7 +144,7 @@ func main() {
 		}
 
 		// Show when next collection will happen
-		nextTime := time.Now().Add(1 * time.Minute)
+		nextTime := time.Now().Add(30 * time.Second)
 		fmt.Printf("Next collection at %s\n", nextTime.Format("15:04:05"))
 	}
 }

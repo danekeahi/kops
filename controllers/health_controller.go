@@ -403,7 +403,7 @@ func reportViolations(violations []ThresholdViolation) {
 		fmt.Printf("%d. %s: current=%.2f, threshold=%.2f (reason: %s)\n",
 			i+1, v.Metric, v.Current, v.Threshold, v.Reason)
 	}
-	fmt.Println("==========================================\n")
+	fmt.Printf("==========================================\n\n")
 }
 
 func abort(azureClient *azure.Client, opName string, reason string) bool {

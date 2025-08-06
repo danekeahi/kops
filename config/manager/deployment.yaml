@@ -32,7 +32,7 @@ metadata:
   name: workload-monitor-sa
   namespace: default
   annotations:
-    azure.workload.identity/client-id: 9665635e-0bc7-436c-b7ab-48d1d6b45295
+    azure.workload.identity/client-id: 0e5f9841-2aad-414d-b941-d940bfa1fc59
 ---
 apiVersion: v1
 kind: Secret
@@ -43,7 +43,7 @@ type: Opaque
 stringData:
   AZURE_SUBSCRIPTION_ID: "8ecadfc9-d1a3-4ea4-b844-0d9f87e4d7c8" # Azure subscription ID
   AZURE_RESOURCE_GROUP: "target-rg" # Resource group for the AKS cluster
-  AZURE_CLUSTER_NAME: "test-upgrade" # Name of the AKS cluster
+  AZURE_CLUSTER_NAME: "target-cluster" # Name of the AKS cluster
   OPERATION_CR_NAMESPACE: "default" # Namespace for operation controller
   CUSTOMER_HEALTH_URL: ""  # Example URL for custom health checks
 ---
@@ -164,7 +164,7 @@ spec:
           failureThreshold: 3
       # Operation Controller Container
       - name: operation-controller
-        image: ellezaaaa/operation_controller:v2
+        image: ellezaaaa/operation_controller:v3
         imagePullPolicy: Always
         securityContext:
           allowPrivilegeEscalation: false

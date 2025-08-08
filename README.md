@@ -91,3 +91,28 @@ Once the system is deployed, creating a new `Operation` custom resource will tri
 If any thresholds are breached, the `health-controller` will automatically abort the operation based on your configuration.
 
 ---
+
+## Monitoring and Debugging
+
+To check the logs of any of the three containers running in the kops pod, use the following command:
+
+```sh
+kubectl logs -l app=kops -c <container-name>
+```
+
+Where `<container-name>` is one of:
+- `health-controller` - For health monitoring and threshold violation logs
+- `metric-collector` - For metric collection and ConfigMap update logs  
+- `operation-controller` - For Operation CR management logs
+
+For example, to view health controller logs:
+```sh
+kubectl logs -l app=kops -c health-controller
+```
+
+To follow logs in real-time, add the `-f` flag:
+```sh
+kubectl logs -l app=kops -c health-controller -f
+```
+
+---

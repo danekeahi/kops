@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"k8s.io/client-go/rest"
@@ -10,7 +9,6 @@ import (
 )
 
 func main() {
-	ctx := context.Background()
 
 	// Load Azure configuration
 	SubscriptionID := os.Getenv("AZURE_SUBSCRIPTION_ID")
@@ -31,35 +29,21 @@ func main() {
 		return
 	}
 	
-	// Fetch kubeconfig from target AKS cluster
-	restCfg, err := azure.GetKubeRestConfig(ctx, aksClient, ResourceGroupName, ClusterName)
-	if err != nil {
-		fmt.Printf("Error retrieving kubeconfig: %v\n", err)
-		return
-	}
-
-	// Fetch kubeconfig from the base AKS cluster
-	baseRestCfg, err := rest.InClusterConfig()
+	// Fetch kubeconfig from Monitoring AKS cluster
+	restCfg, err := rest.InClusterConfig()
 	if err != nil {
 		fmt.Printf("Error getting in-cluster config: %v\n", err)
 		return
 	}
 	
-	// Create typed Kubernetes client
+	// Create typed Kubernetes client (used for ConfigMap and accessing user-defined thresholds)
 	typedClient, err := azure.GetTypedClient(restCfg)
 	if err != nil {
 		fmt.Printf("Error creating typed Kubernetes client: %v\n", err)
 		return
 	}
 
-	// Create base typed Kubernetes client
-	baseTypedClient, err := azure.GetTypedClient(baseRestCfg)
-	if err != nil {
-		fmt.Printf("Error creating base typed Kubernetes client: %v\n", err)
-		return
-	}
-
-	// Create dynamic Kubernetes client
+	// Create dynamic Kubernetes client (used for custom resources)
 	dynClient, err := azure.GetDynamicClient(restCfg)
 	if err != nil {
 		fmt.Printf("Error creating dynamic Kubernetes client: %v\n", err)
@@ -67,7 +51,7 @@ func main() {
 	}
 
 	// Start health monitoring
-	err = controllers.StartHealthMonitoring(aksClient, typedClient, dynClient, baseTypedClient)
+	err = controllers.StartHealthMonitoring(aksClient, typedClient, dynClient)
 	if err != nil {
 		fmt.Printf("Failed to start health monitoring: %v\n", err)
 		return

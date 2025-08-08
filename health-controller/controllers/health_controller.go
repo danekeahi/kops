@@ -3,7 +3,7 @@ package controllers
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"fmt" 
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -24,7 +24,7 @@ var (
 	metricsUpdated    chan struct{}                    // Used to signal when metrics are updated
 )
 
-func StartHealthMonitoring(azureClient *azure.Client, typedClient kubernetes.Interface, dynClient dynamic.Interface, baseClient kubernetes.Interface) error {
+func StartHealthMonitoring(azureClient *azure.Client, typedClient kubernetes.Interface, dynClient dynamic.Interface) error {
 	// Initialize channel for metrics updates
 	metricsUpdated = make(chan struct{}, 1) // Buffered so it won't block
 
@@ -58,7 +58,7 @@ func StartHealthMonitoring(azureClient *azure.Client, typedClient kubernetes.Int
 			stop := make(chan struct{})
 			operationMonitors[name] = stop // Store the stop channel for this CR
 			fmt.Printf("Starting monitoring for operation: %s\n", name)
-			go monitorOperation(name, stop, azureClient, typedClient, baseClient)
+			go monitorOperation(name, stop, azureClient, typedClient)
 		},
 
 		DeleteFunc: func(obj interface{}) {
@@ -109,11 +109,11 @@ func StartHealthMonitoring(azureClient *azure.Client, typedClient kubernetes.Int
 }
 
 // This function runs in a goroutine and checks metrics periodically
-func monitorOperation(opName string, stopChan <-chan struct{}, azureClient *azure.Client, typedClient kubernetes.Interface, baseClient kubernetes.Interface) {
+func monitorOperation(opName string, stopChan <-chan struct{}, azureClient *azure.Client, typedClient kubernetes.Interface) {
 	fmt.Printf("Started monitoring operation: %s\n", opName)
 
 	// Initial check
-	if checkAndAbortIfUnhealthy(opName, azureClient, typedClient, baseClient) {
+	if checkAndAbortIfUnhealthy(opName, azureClient, typedClient) {
 		return
 	}
 
@@ -124,7 +124,7 @@ func monitorOperation(opName string, stopChan <-chan struct{}, azureClient *azur
 			return
 		case <-metricsUpdated:
 			// This case will be triggered when metrics are updated
-			if checkAndAbortIfUnhealthy(opName, azureClient, typedClient, baseClient) {
+			if checkAndAbortIfUnhealthy(opName, azureClient, typedClient) {
 				return
 			}
 		}
@@ -139,7 +139,7 @@ type ThresholdViolation struct {
 	Reason    string
 }
 
-func checkAndAbortIfUnhealthy(opName string, azureClient *azure.Client, typedClient kubernetes.Interface, baseClient kubernetes.Interface) bool {
+func checkAndAbortIfUnhealthy(opName string, azureClient *azure.Client, typedClient kubernetes.Interface) bool {
 	// Check the health of the operation and abort if unhealthy
 	metricCM, err := typedClient.CoreV1().ConfigMaps("default").Get(context.TODO(), "metrics-store", metav1.GetOptions{})
 	if err != nil {
@@ -163,7 +163,7 @@ func checkAndAbortIfUnhealthy(opName string, azureClient *azure.Client, typedCli
 	}
 
 	// Fetch metric-thresholds ConfigMap from base cluster
-	thresholdCM, err := baseClient.CoreV1().ConfigMaps("default").Get(context.TODO(), "metric-thresholds", metav1.GetOptions{})
+	thresholdCM, err := typedClient.CoreV1().ConfigMaps("default").Get(context.TODO(), "metric-thresholds", metav1.GetOptions{})
 	if err != nil {
 		fmt.Printf("Failed to fetch metric-thresholds ConfigMap: %v\n", err)
 		return false

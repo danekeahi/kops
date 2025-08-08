@@ -32,7 +32,7 @@ metadata:
   name: workload-monitor-sa
   namespace: default
   annotations:
-    azure.workload.identity/client-id: 0e5f9841-2aad-414d-b941-d940bfa1fc59
+    azure.workload.identity/client-id: abe1df16-eeb2-4e5e-a40b-2db047f909ad
 ---
 apiVersion: v1
 kind: Secret
@@ -164,7 +164,7 @@ spec:
           failureThreshold: 3
       # Operation Controller Container
       - name: operation-controller
-        image: ellezaaaa/operation_controller:v3
+        image: ellezaaaa/operation_controller:v4
         imagePullPolicy: Always
         securityContext:
           allowPrivilegeEscalation: false
